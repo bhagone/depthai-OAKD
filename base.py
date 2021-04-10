@@ -5,66 +5,78 @@ from glob import glob
 
 from util import frame_norm
 
+
+for device in depthai.Device.getAllAvailableDevices():
+    print(f"Device ID:{device.getMxId()}, Device state: {device.state}")
+
 mobilenet_path = glob("models/*.blob")[0]  # mobileNet
 
-pipeline = depthai.Pipeline()
 
-cam_rgb = pipeline.createColorCamera()
-cam_rgb.setPreviewSize(300, 300)
-cam_rgb.setInterleaved(False)
+def run():
+    pipeline = depthai.Pipeline()
 
-detection_nn = pipeline.createNeuralNetwork()
-detection_nn.setBlobPath(mobilenet_path)
+    cam_rgb = pipeline.createColorCamera()
+    cam_rgb.setPreviewSize(300, 300)
+    cam_rgb.setInterleaved(False)
 
-cam_rgb.preview.link(detection_nn.input)
+    detection_nn = pipeline.createNeuralNetwork()
+    detection_nn.setBlobPath(mobilenet_path)
 
-# output both rgb and nn inference to host device screen
-xout_rgb = pipeline.createXLinkOut()
-xout_rgb.setStreamName("rgb")
-cam_rgb.preview.link(xout_rgb.input)
+    cam_rgb.preview.link(detection_nn.input)
 
-xout_nn = pipeline.createXLinkOut()
-xout_nn.setStreamName("nn")
-detection_nn.out.link(xout_nn.input)
+    # output both rgb and nn inference to host device screen
+    xout_rgb = pipeline.createXLinkOut()
+    xout_rgb.setStreamName("rgb")
+    cam_rgb.preview.link(xout_rgb.input)
 
-# intialize
-device = depthai.Device(pipeline)
-device.startPipeline()
+    xout_nn = pipeline.createXLinkOut()
+    xout_nn.setStreamName("nn")
+    detection_nn.out.link(xout_nn.input)
 
-# host side queues to receive results
-q_rgb = device.getOutputQueue("rgb")
-q_nn = device.getOutputQueue("nn")
+    # intialize
+    device = depthai.Device(pipeline)
+    device.startPipeline()
 
-# place-holders to consume the above result
-frame = None
-bboxes = []
+    # host side queues to receive results
+    q_rgb = device.getOutputQueue("rgb")
+    q_nn = device.getOutputQueue("nn")
 
-while True:
-    in_rgb = q_rgb.tryGet()
-    in_nn = q_nn.tryGet()
+    # place-holders to consume the above result
+    frame = None
+    bboxes = []
 
-    # transform the input from rgb camera(1D array) into HWC format
-    if in_rgb is not None:
-        shape = (3, in_rgb.getHeight(), in_rgb.getWidth())
-        frame = in_rgb.getData().reshape(shape).transpose(1, 2, 0).astype(np.uint8)
-        frame = np.ascontiguousarray(frame)
+    while True:
+        in_rgb = q_rgb.tryGet()
+        in_nn = q_nn.tryGet()
 
-    # transform the nn inputs too
-    # (image_id, label, confidence, x_min, y_min, x_max, y_max)
-    # the last four fields are the bouding boxes
-    if in_nn is not None:
-        bboxes = np.array(in_nn.getFirstLayerFp16())
-        bboxes = bboxes[: np.where(bboxes == -1)[0][0]]
-        bboxes = bboxes.reshape((bboxes.size // 7, 7))
-        bboxes = bboxes[bboxes[:, 2] > 0.8][:, 3:7]
+        # transform the input from rgb camera(1D array) into HWC format
+        if in_rgb is not None:
+            shape = (3, in_rgb.getHeight(), in_rgb.getWidth())
+            frame = in_rgb.getData().reshape(shape).transpose(1, 2, 0).astype(np.uint8)
+            frame = np.ascontiguousarray(frame)
 
-    # display the result
-    if frame is not None:
-        for raw_bbox in bboxes:
-            bbox = frame_norm(frame, raw_bbox)
-            # (image, point1, point2, color, thickness)
-            cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0), 2)
-        cv2.imshow("preview", frame)
+        # transform the nn inputs too
+        # (image_id, label, confidence, x_min, y_min, x_max, y_max)
+        # the last four fields are the bouding boxes
+        if in_nn is not None:
+            bboxes = np.array(in_nn.getFirstLayerFp16())
+            bboxes = bboxes[: np.where(bboxes == -1)[0][0]]
+            bboxes = bboxes.reshape((bboxes.size // 7, 7))
+            bboxes = bboxes[bboxes[:, 2] > 0.8][:, 3:7]
 
-    if cv2.waitKey(1) == ord("q"):
-        break
+        # display the result
+        if frame is not None:
+            for raw_bbox in bboxes:
+                bbox = frame_norm(frame, raw_bbox)
+                # (image, point1, point2, color, thickness)
+                cv2.rectangle(
+                    frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0), 2
+                )
+            cv2.imshow("preview", frame)
+
+        if cv2.waitKey(1) == ord("q"):
+            break
+
+
+if __name__ == "__main__":
+    run()
